@@ -1,0 +1,5 @@
+{
+  "name": "AI Reader",
+  "description": "An interactive AI-powered reading platform that helps you learn and master books through smart chapter splitting, structured summaries, and context-aware chat.",
+  "requestFramePermissions": []
+}

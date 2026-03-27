@@ -1,8 +1,12 @@
 "use client";
 
 import React, { useState } from 'react';
-import { useAppContext } from '../context/AppContext';
-import { Sparkles, Globe, Users, Book, MessageSquare, Loader2, Send, Plus, Trash2, Swords, Play, Target, CheckCircle2, Circle, PenTool } from 'lucide-react';
+import { useAppContext, DEFAULT_WORLD_STATE } from '../context/AppContext';
+import { 
+  Sparkles, Globe, Users, Book, MessageSquare, Loader2, Send, Plus, Trash2, 
+  Swords, Play, Target, CheckCircle2, Circle, PenTool, BookOpen, 
+  Sliders, Zap, Ban, Eye, History, ChevronDown, ChevronUp 
+} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -13,9 +17,11 @@ export default function AICompanion() {
     activeChapterId, setActiveChapterId,
     chatHistory, setChatHistory,
     isGeneratingWorld, setIsGeneratingWorld,
-    getAiClient, setAlertDialog, setConfirmDialog, setPromptDialog,
+    isExtracting, setIsExtracting,
+    getOpenAiClient, callAi, setAlertDialog, setConfirmDialog, setPromptDialog,
     sandboxHistory, setSandboxHistory,
-    isSimulating, setIsSimulating
+    isSimulating, setIsSimulating,
+    apiSettings, getStylePrompt
   } = useAppContext();
 
   const [activeTab, setActiveTab] = useState<'forge' | 'world' | 'sandbox' | 'threads' | 'assistant'>('forge');
@@ -25,6 +31,9 @@ export default function AICompanion() {
   const [sandboxCharA, setSandboxCharA] = useState('');
   const [sandboxCharB, setSandboxCharB] = useState('');
   const [sandboxScenario, setSandboxScenario] = useState('');
+  const [sampleText, setSampleText] = useState('');
+  const [isAnalyzingSample, setIsAnalyzingSample] = useState(false);
+  const [showSampleInput, setShowSampleInput] = useState(false);
 
   const activeChapter = chapters.find(ch => ch.id === activeChapterId);
 
@@ -46,15 +55,14 @@ export default function AICompanion() {
   };
 
   const executeGenerateWorld = async () => {
-    const ai = getAiClient();
-    if (!ai) return;
-
     setIsGeneratingWorld(true);
 
     try {
       const prompt = `你是一个顶级小说家和世界观架构师。请根据以下一句话灵感，构建一个详细的世界观，并生成 3-5 章的故事大纲（包含每章的细纲节拍）。
       
       灵感："${worldPrompt}"
+      
+      ${getStylePrompt()}
       
       请返回一个严格的 JSON 对象，包含以下字段：
       1. "rules": 字符串数组，核心世界法则。
@@ -65,26 +73,23 @@ export default function AICompanion() {
       
       必须使用中文输出，并且严格遵守 JSON 格式。`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-pro-preview',
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: "OBJECT",
-            properties: {
-              rules: { type: "ARRAY", items: { type: "STRING" } },
-              ledger: { type: "OBJECT", properties: { time: { type: "STRING" }, resources: { type: "STRING" }, notes: { type: "STRING" } } },
-              characters: { type: "ARRAY", items: { type: "OBJECT", properties: { id: { type: "STRING" }, name: { type: "STRING" }, state: { type: "STRING" }, knowledge: { type: "STRING" }, location: { type: "STRING" }, inventory: { type: "STRING" } } } },
-              pastEvents: { type: "ARRAY", items: { type: "STRING" } },
-              chapters: { type: "ARRAY", items: { type: "OBJECT", properties: { title: { type: "STRING" }, intent: { type: "STRING" }, beats: { type: "ARRAY", items: { type: "STRING" } } } } }
-            },
-            required: ["rules", "ledger", "characters", "pastEvents", "chapters"]
-          }
+      const responseText = await callAi({
+        prompt: prompt,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "OBJECT",
+          properties: {
+            rules: { type: "ARRAY", items: { type: "STRING" } },
+            ledger: { type: "OBJECT", properties: { time: { type: "STRING" }, resources: { type: "STRING" }, notes: { type: "STRING" } } },
+            characters: { type: "ARRAY", items: { type: "OBJECT", properties: { id: { type: "STRING" }, name: { type: "STRING" }, state: { type: "STRING" }, knowledge: { type: "STRING" }, location: { type: "STRING" }, inventory: { type: "STRING" } } } },
+            pastEvents: { type: "ARRAY", items: { type: "STRING" } },
+            chapters: { type: "ARRAY", items: { type: "OBJECT", properties: { title: { type: "STRING" }, intent: { type: "STRING" }, beats: { type: "ARRAY", items: { type: "STRING" } } } } }
+          },
+          required: ["rules", "ledger", "characters", "pastEvents", "chapters"]
         }
       });
 
-      const result = JSON.parse(response.text || '{}');
+      const result = JSON.parse(responseText || '{}');
       
       setWorldState(prev => ({
         ...prev,
@@ -126,8 +131,6 @@ export default function AICompanion() {
 
   const runSandbox = async () => {
     if (!sandboxCharA || !sandboxCharB || !sandboxScenario.trim()) return;
-    const ai = getAiClient();
-    if (!ai) return;
     setIsSimulating(true);
     try {
       const charA = worldState.characters.find(c => c.id === sandboxCharA);
@@ -140,28 +143,27 @@ export default function AICompanion() {
       
       冲突/场景设定：${sandboxScenario}
       
+      ${getStylePrompt()}
+      
       要求：
       1. 必须使用中文。
       2. 对话要符合人物性格，充满张力，不要说废话。
       3. 包含适当的神态和动作描写。
       4. 返回 JSON 格式，包含一个 "dialogues" 数组，每个元素有 "character" (角色名) 和 "text" (台词及动作描写)。`;
       
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-pro-preview',
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: 'OBJECT',
-            properties: {
-              dialogues: {
-                type: 'ARRAY',
-                items: {
-                  type: 'OBJECT',
-                  properties: {
-                    character: { type: 'STRING' },
-                    text: { type: 'STRING' }
-                  }
+      const responseText = await callAi({
+        prompt: prompt,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'OBJECT',
+          properties: {
+            dialogues: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  character: { type: 'STRING' },
+                  text: { type: 'STRING' }
                 }
               }
             }
@@ -169,7 +171,7 @@ export default function AICompanion() {
         }
       });
       
-      const result = JSON.parse(response.text || '{}');
+      const result = JSON.parse(responseText || '{}');
       if (result.dialogues) {
         setSandboxHistory(result.dialogues);
       }
@@ -181,10 +183,66 @@ export default function AICompanion() {
     }
   };
 
+  const handleAnalyzeSample = async () => {
+    if (!sampleText.trim()) return;
+    setIsAnalyzingSample(true);
+    try {
+      const prompt = `你是一个文学评论家和文风分析专家。请分析以下文本片段，并提取其文风特征。
+      
+      文本片段："${sampleText}"
+      
+      请返回一个严格的 JSON 对象，包含以下字段：
+      1. "description": 简短的文风描述。
+      2. "pacing": 1-5 的数字 (1: 极慢, 5: 极快)。
+      3. "diction": "colloquial", "literary", "archaic", "hardcore" 之一。
+      4. "sentenceStructure": "short", "mixed", "long" 之一。
+      5. "sensoryFocus": 字符串数组，包含 "visual", "auditory", "olfactory", "tactile", "gustatory", "psychological" 中的若干项。
+      6. "perspective": "first", "third-limited", "third-omniscient" 之一。
+      7. "forbiddenWords": 建议避讳的词汇数组。
+      8. "signaturePatterns": 标志性的表达方式或修辞手法数组。
+      9. "sampleAnalysis": 对该片段的详细分析总结。`;
+
+      const responseText = await callAi({
+        prompt: prompt,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "OBJECT",
+          properties: {
+            description: { type: "STRING" },
+            pacing: { type: "NUMBER" },
+            diction: { type: "STRING" },
+            sentenceStructure: { type: "STRING" },
+            sensoryFocus: { type: "ARRAY", items: { type: "STRING" } },
+            perspective: { type: "STRING" },
+            forbiddenWords: { type: "ARRAY", items: { type: "STRING" } },
+            signaturePatterns: { type: "ARRAY", items: { type: "STRING" } },
+            sampleAnalysis: { type: "STRING" }
+          },
+          required: ["description", "pacing", "diction", "sentenceStructure", "sensoryFocus", "perspective", "forbiddenWords", "signaturePatterns", "sampleAnalysis"]
+        }
+      });
+
+      const result = JSON.parse(responseText || '{}');
+      setWorldState(prev => ({
+        ...prev,
+        style: {
+          ...prev.style,
+          ...result
+        }
+      }));
+      setSampleText('');
+      setShowSampleInput(false);
+      setAlertDialog({ isOpen: true, message: '文风分析完成！已更新设定。' });
+    } catch (error) {
+      console.error(error);
+      setAlertDialog({ isOpen: true, message: '文风分析失败，请重试。' });
+    } finally {
+      setIsAnalyzingSample(false);
+    }
+  };
+
   const handleSendMessage = async () => {
     if (!chatInput.trim()) return;
-    const ai = getAiClient();
-    if (!ai) return;
 
     const userMsg = { id: Date.now().toString(), role: 'user' as const, text: chatInput };
     setChatHistory(prev => [...prev, userMsg]);
@@ -198,16 +256,17 @@ export default function AICompanion() {
       当前章节：${activeChapter?.title || '无'}
       正文内容：${activeChapter?.content.substring(0, 2000) || '无'}
       
+      ${getStylePrompt()}
+      
       用户问题：${userMsg.text}
       
       请使用中文，以导师的口吻给出专业、有建设性的回答。`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: prompt,
+      const responseText = await callAi({
+        prompt: prompt,
       });
 
-      const aiMsg = { id: (Date.now() + 1).toString(), role: 'model' as const, text: response.text || "抱歉，我无法回答这个问题。" };
+      const aiMsg = { id: (Date.now() + 1).toString(), role: 'model' as const, text: responseText || "抱歉，我无法回答这个问题。" };
       setChatHistory(prev => [...prev, aiMsg]);
     } catch (error) {
       console.error(error);
@@ -218,9 +277,14 @@ export default function AICompanion() {
   };
 
   return (
-    <div className="w-80 bg-slate-50 border-l border-slate-200 flex flex-col h-full">
+    <div className="w-full bg-slate-50 border-l border-slate-200 flex flex-col h-full">
       {/* Tabs */}
-      <div className="flex border-b border-slate-200 bg-white shrink-0">
+      <div className="flex border-b border-slate-200 bg-white shrink-0 relative">
+        {isExtracting && (
+          <div className="absolute -top-6 left-0 right-0 h-6 bg-indigo-600 text-white text-[10px] flex items-center justify-center gap-2 animate-pulse z-50">
+            <Loader2 className="w-3 h-3 animate-spin" /> 正在从正文自动提取设定 (Auto-Growth)...
+          </div>
+        )}
         <button onClick={() => setActiveTab('forge')} className={`flex-1 py-3 text-[10px] sm:text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-1 transition-colors ${activeTab === 'forge' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'}`}>
           <Sparkles className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> 创世
         </button>
@@ -275,14 +339,14 @@ export default function AICompanion() {
               ) : (
                 (worldState.threads || []).map(thread => (
                   <div key={thread.id} className={`bg-white rounded-xl border p-4 shadow-sm relative group transition-colors ${thread.status === 'resolved' ? 'border-green-200 bg-green-50/30' : 'border-slate-200'}`}>
-                    <button onClick={() => setWorldState(prev => ({ ...prev, threads: prev.threads.filter(t => t.id !== thread.id) }))} className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity"><Trash2 className="w-3.5 h-3.5"/></button>
+                    <button onClick={() => setWorldState(prev => ({ ...prev, threads: (prev.threads || []).filter(t => t.id !== thread.id) }))} className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity"><Trash2 className="w-3.5 h-3.5"/></button>
                     
                     <div className="flex items-start gap-3 pr-6">
                       <button 
                         onClick={() => {
                           setWorldState(prev => ({
                             ...prev,
-                            threads: prev.threads.map(t => t.id === thread.id ? { ...t, status: t.status === 'open' ? 'resolved' : 'open' } : t)
+                            threads: (prev.threads || []).map(t => t.id === thread.id ? { ...t, status: t.status === 'open' ? 'resolved' : 'open' } : t)
                           }));
                         }}
                         className="mt-0.5 shrink-0"
@@ -302,7 +366,7 @@ export default function AICompanion() {
                           onChange={(e) => {
                             setWorldState(prev => ({
                               ...prev,
-                              threads: prev.threads.map(t => t.id === thread.id ? { ...t, description: e.target.value } : t)
+                              threads: (prev.threads || []).map(t => t.id === thread.id ? { ...t, description: e.target.value } : t)
                             }));
                           }}
                           placeholder="详细描述这个伏笔..."
@@ -327,12 +391,12 @@ export default function AICompanion() {
                 <div className="flex gap-2">
                   <select value={sandboxCharA} onChange={(e) => setSandboxCharA(e.target.value)} className="flex-1 text-sm border border-slate-200 p-2 rounded-lg focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none">
                     <option value="">选择角色 A</option>
-                    {worldState.characters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    {(worldState.characters || []).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                   <span className="text-slate-400 self-center text-sm font-bold">VS</span>
                   <select value={sandboxCharB} onChange={(e) => setSandboxCharB(e.target.value)} className="flex-1 text-sm border border-slate-200 p-2 rounded-lg focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none">
                     <option value="">选择角色 B</option>
-                    {worldState.characters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    {(worldState.characters || []).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </div>
                 <textarea
@@ -405,19 +469,210 @@ export default function AICompanion() {
 
         {activeTab === 'world' && (
           <div className="space-y-6">
+            {/* Style & Tone Section */}
             <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-              <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm mb-3">
-                <PenTool className="w-4 h-4 text-indigo-500"/> 文风与基调 (Style Profile)
-              </h3>
-              <textarea
-                value={worldState.styleProfile || ''}
-                onChange={(e) => setWorldState(prev => ({ ...prev, styleProfile: e.target.value }))}
-                placeholder="例如：古龙风，短句为主，肃杀，留白多；或者：细节繁复，注重心理描写，克苏鲁风格..."
-                className="w-full text-sm border border-slate-200 p-3 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 resize-none h-24 outline-none text-slate-700"
-              />
-              <p className="text-xs text-slate-500 mt-2">
-                AI 在撰写正文时，会严格遵循此处的文风设定，消除“AI 味”。
-              </p>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm">
+                  <PenTool className="w-4 h-4 text-indigo-500"/> 文风与基调 (Style & Tone)
+                </h3>
+                <button 
+                  onClick={() => setShowSampleInput(!showSampleInput)}
+                  className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-1 rounded-md hover:bg-indigo-100 transition-colors flex items-center gap-1"
+                >
+                  <History className="w-3 h-3" /> 样本学习
+                </button>
+              </div>
+
+              {showSampleInput && (
+                <div className="mb-4 p-3 bg-slate-50 rounded-lg border border-slate-200 animate-in fade-in slide-in-from-top-2">
+                  <p className="text-[10px] text-slate-500 mb-2">粘贴一段您喜欢的文字，AI 将自动分析并提取文风参数。</p>
+                  <textarea
+                    value={sampleText}
+                    onChange={(e) => setSampleText(e.target.value)}
+                    placeholder="在此输入样本文字..."
+                    className="w-full h-24 text-xs p-2 border border-slate-200 rounded-md focus:ring-1 focus:ring-indigo-500 outline-none mb-2"
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button onClick={() => setShowSampleInput(false)} className="text-[10px] text-slate-400 hover:text-slate-600">取消</button>
+                    <button 
+                      onClick={handleAnalyzeSample}
+                      disabled={isAnalyzingSample || !sampleText.trim()}
+                      className="text-[10px] bg-indigo-600 text-white px-3 py-1 rounded-md hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1"
+                    >
+                      {isAnalyzingSample ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                      开始分析
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-4">
+                {/* Description */}
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase mb-1 block">核心描述</label>
+                  <textarea
+                    value={worldState.style?.description || ''}
+                    onChange={(e) => setWorldState(prev => ({ ...prev, style: { ...(prev.style || DEFAULT_WORLD_STATE.style!), description: e.target.value } }))}
+                    placeholder="例如：古龙风，短句为主，肃杀，留白多..."
+                    className="w-full text-xs border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-indigo-500 outline-none h-16"
+                  />
+                </div>
+
+                {/* Sliders & Selects Grid */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase mb-1 block flex items-center gap-1">
+                      <Zap className="w-3 h-3" /> 叙事节奏 ({worldState.style?.pacing || 3})
+                    </label>
+                    <input 
+                      type="range" min="1" max="5" step="1"
+                      value={worldState.style?.pacing || 3}
+                      onChange={(e) => setWorldState(prev => ({ ...prev, style: { ...(prev.style || DEFAULT_WORLD_STATE.style!), pacing: parseInt(e.target.value) } }))}
+                      className="w-full accent-indigo-600 h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[8px] text-slate-400 mt-1">
+                      <span>舒缓</span>
+                      <span>紧凑</span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase mb-1 block">用词风格</label>
+                    <select 
+                      value={worldState.style?.diction || 'literary'}
+                      onChange={(e) => setWorldState(prev => ({ ...prev, style: { ...(prev.style || DEFAULT_WORLD_STATE.style!), diction: e.target.value as any } }))}
+                      className="w-full text-xs border border-slate-200 p-1.5 rounded-md outline-none focus:ring-1 focus:ring-indigo-500"
+                    >
+                      <option value="colloquial">通俗白话</option>
+                      <option value="literary">文学雅致</option>
+                      <option value="archaic">古风/半文白</option>
+                      <option value="hardcore">冷峻硬核</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase mb-1 block">句式偏好</label>
+                    <select 
+                      value={worldState.style?.sentenceStructure || 'mixed'}
+                      onChange={(e) => setWorldState(prev => ({ ...prev, style: { ...(prev.style || DEFAULT_WORLD_STATE.style!), sentenceStructure: e.target.value as any } }))}
+                      className="w-full text-xs border border-slate-200 p-1.5 rounded-md outline-none focus:ring-1 focus:ring-indigo-500"
+                    >
+                      <option value="short">短句为主</option>
+                      <option value="mixed">长短结合</option>
+                      <option value="long">长句/西化</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase mb-1 block">叙事视角</label>
+                    <select 
+                      value={worldState.style?.perspective || 'third-limited'}
+                      onChange={(e) => setWorldState(prev => ({ ...prev, style: { ...(prev.style || DEFAULT_WORLD_STATE.style!), perspective: e.target.value as any } }))}
+                      className="w-full text-xs border border-slate-200 p-1.5 rounded-md outline-none focus:ring-1 focus:ring-indigo-500"
+                    >
+                      <option value="first">第一人称</option>
+                      <option value="third-limited">第三人称限知</option>
+                      <option value="third-omniscient">第三人称全知</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Sensory Focus */}
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase mb-2 block flex items-center gap-1">
+                    <Eye className="w-3 h-3" /> 感官偏好
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { id: 'visual', label: '视觉' },
+                      { id: 'auditory', label: '听觉' },
+                      { id: 'olfactory', label: '嗅觉' },
+                      { id: 'tactile', label: '触觉' },
+                      { id: 'psychological', label: '心理' }
+                    ].map(sense => (
+                      <button
+                        key={sense.id}
+                        onClick={() => {
+                          const current = worldState.style?.sensoryFocus || [];
+                          const next = current.includes(sense.id) 
+                            ? current.filter(s => s !== sense.id)
+                            : [...current, sense.id];
+                          setWorldState(prev => ({ ...prev, style: { ...(prev.style || DEFAULT_WORLD_STATE.style!), sensoryFocus: next } }));
+                        }}
+                        className={`text-[10px] px-2 py-1 rounded-full border transition-colors ${
+                          (worldState.style?.sensoryFocus || []).includes(sense.id)
+                            ? 'bg-indigo-600 border-indigo-600 text-white'
+                            : 'bg-white border-slate-200 text-slate-500 hover:border-indigo-300'
+                        }`}
+                      >
+                        {sense.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Forbidden Words */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1">
+                      <Ban className="w-3 h-3" /> 避讳词 (AI 味消除)
+                    </label>
+                    <button onClick={() => {
+                      setPromptDialog({
+                        isOpen: true, message: '添加避讳词：', value: '',
+                        onConfirm: (val) => {
+                          if (val.trim()) setWorldState(prev => ({ ...prev, style: { ...(prev.style || DEFAULT_WORLD_STATE.style!), forbiddenWords: [...(prev.style?.forbiddenWords || []), val.trim()] } }));
+                          setPromptDialog(prev => ({ ...prev, isOpen: false }));
+                        }
+                      });
+                    }} className="text-indigo-600 hover:bg-indigo-50 p-0.5 rounded"><Plus className="w-3 h-3"/></button>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(worldState.style?.forbiddenWords || []).map((word, i) => (
+                      <span key={i} className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md flex items-center gap-1 group">
+                        {word}
+                        <button onClick={() => setWorldState(prev => ({ ...prev, style: { ...(prev.style || DEFAULT_WORLD_STATE.style!), forbiddenWords: (prev.style?.forbiddenWords || []).filter((_, idx) => idx !== i) } }))} className="text-slate-400 hover:text-red-500"><Trash2 className="w-2.5 h-2.5"/></button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Signature Patterns */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1">
+                      <PenTool className="w-3 h-3" /> 标志性表达/修辞
+                    </label>
+                    <button onClick={() => {
+                      setPromptDialog({
+                        isOpen: true, message: '添加标志性表达/修辞：', value: '',
+                        onConfirm: (val) => {
+                          if (val.trim()) setWorldState(prev => ({ ...prev, style: { ...(prev.style || DEFAULT_WORLD_STATE.style!), signaturePatterns: [...(prev.style?.signaturePatterns || []), val.trim()] } }));
+                          setPromptDialog(prev => ({ ...prev, isOpen: false }));
+                        }
+                      });
+                    }} className="text-indigo-600 hover:bg-indigo-50 p-0.5 rounded"><Plus className="w-3 h-3"/></button>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(worldState.style?.signaturePatterns || []).map((pattern, i) => (
+                      <span key={i} className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-md flex items-center gap-1 group border border-indigo-100">
+                        {pattern}
+                        <button onClick={() => setWorldState(prev => ({ ...prev, style: { ...(prev.style || DEFAULT_WORLD_STATE.style!), signaturePatterns: (prev.style?.signaturePatterns || []).filter((_, idx) => idx !== i) } }))} className="text-indigo-400 hover:text-red-500"><Trash2 className="w-2.5 h-2.5"/></button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Sample Analysis Summary */}
+                {worldState.style?.sampleAnalysis && (
+                  <div className="mt-4 p-3 bg-indigo-50/50 rounded-lg border border-indigo-100">
+                    <label className="text-[10px] font-bold text-indigo-400 uppercase mb-1 block">样本分析总结</label>
+                    <p className="text-[10px] text-indigo-900 leading-relaxed italic">
+                      {worldState.style.sampleAnalysis}
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Rules */}
@@ -435,10 +690,10 @@ export default function AICompanion() {
                 }} className="text-indigo-600 hover:bg-indigo-50 p-1 rounded"><Plus className="w-4 h-4"/></button>
               </div>
               <ul className="space-y-2">
-                {worldState.rules.map((rule, i) => (
+                {(worldState.rules || []).map((rule, i) => (
                   <li key={i} className="text-sm text-slate-600 bg-slate-50 p-2 rounded flex justify-between group">
                     <span>{rule}</span>
-                    <button onClick={() => setWorldState(prev => ({ ...prev, rules: prev.rules.filter((_, idx) => idx !== i) }))} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5"/></button>
+                    <button onClick={() => setWorldState(prev => ({ ...prev, rules: (prev.rules || []).filter((_, idx) => idx !== i) }))} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5"/></button>
                   </li>
                 ))}
               </ul>
@@ -447,7 +702,7 @@ export default function AICompanion() {
             {/* Characters */}
             <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm"><Users className="w-4 h-4 text-indigo-500"/> 角色档案</h3>
+                <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm"><Users className="w-4 h-4 text-indigo-500"/> 角色档案 (Codex)</h3>
                 <button onClick={() => {
                   setPromptDialog({
                     isOpen: true, message: '添加新角色名称：', value: '',
@@ -459,17 +714,39 @@ export default function AICompanion() {
                 }} className="text-indigo-600 hover:bg-indigo-50 p-1 rounded"><Plus className="w-4 h-4"/></button>
               </div>
               <div className="space-y-3">
-                {worldState.characters.map(char => (
-                  <div key={char.id} className="text-sm bg-slate-50 p-3 rounded-lg border border-slate-100 relative group">
-                    <button onClick={() => setWorldState(prev => ({ ...prev, characters: prev.characters.filter(c => c.id !== char.id) }))} className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5"/></button>
-                    <div className="font-bold text-indigo-900 mb-1">{char.name}</div>
-                    <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-xs text-slate-500">
-                      <div><span className="text-slate-400">状态:</span> {char.state}</div>
+                {(worldState.characters || []).map(char => (
+                  <div key={char.id} className="text-sm bg-slate-50 p-3 rounded-lg border border-slate-100 relative group hover:border-indigo-200 transition-colors">
+                    <button onClick={() => setWorldState(prev => ({ ...prev, characters: (prev.characters || []).filter(c => c.id !== char.id) }))} className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5"/></button>
+                    <div className="font-bold text-indigo-900 mb-1 flex items-center gap-2">
+                      {char.name}
+                      {char.state !== '正常' && <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-normal">{char.state}</span>}
+                    </div>
+                    <div className="grid grid-cols-1 gap-y-1 text-xs text-slate-500">
                       <div><span className="text-slate-400">位置:</span> {char.location}</div>
-                      <div className="col-span-2"><span className="text-slate-400">物品:</span> {char.inventory}</div>
+                      <div><span className="text-slate-400">知识:</span> {char.knowledge}</div>
+                      <div><span className="text-slate-400">物品:</span> {char.inventory}</div>
                     </div>
                   </div>
                 ))}
+              </div>
+            </div>
+
+            {/* Past Events */}
+            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+              <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm mb-3">
+                <BookOpen className="w-4 h-4 text-indigo-500"/> 编年史 (Chronicle)
+              </h3>
+              <div className="space-y-3 relative before:absolute before:left-[7px] before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-100">
+                {(worldState.pastEvents || []).length === 0 ? (
+                  <p className="text-xs text-slate-400 italic pl-6">暂无重大事件记录。</p>
+                ) : (
+                  (worldState.pastEvents || []).map((event, i) => (
+                    <div key={i} className="relative pl-6 text-xs text-slate-600 leading-relaxed">
+                      <div className="absolute left-0 top-1.5 w-4 h-4 rounded-full bg-white border-2 border-indigo-400 z-10" />
+                      {event}
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           </div>

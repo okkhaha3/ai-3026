@@ -3,10 +3,15 @@
 import React, { useRef } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { Chapter } from '../types';
-import { BookOpen, Plus, Upload, Trash2, Edit3, FileText, Settings } from 'lucide-react';
+import { BookOpen, Plus, Upload, Trash2, Edit3, FileText, Settings, Terminal } from 'lucide-react';
 
 export default function Sidebar() {
-  const { chapters, setChapters, activeChapterId, setActiveChapterId, setConfirmDialog, setPromptDialog } = useAppContext();
+  const { 
+    chapters, setChapters, 
+    activeChapterId, setActiveChapterId, 
+    setConfirmDialog, setPromptDialog,
+    setIsSettingsOpen, setIsConsoleOpen
+  } = useAppContext();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -82,7 +87,7 @@ export default function Sidebar() {
   };
 
   return (
-    <div className="w-64 bg-slate-900 text-slate-300 flex flex-col h-full border-r border-slate-800">
+    <div className="w-full bg-slate-900 text-slate-300 flex flex-col h-full border-r border-slate-800">
       <div className="p-4 border-b border-slate-800 flex items-center gap-3">
         <div className="bg-indigo-500/20 p-2 rounded-lg">
           <BookOpen className="w-5 h-5 text-indigo-400" />
@@ -125,13 +130,13 @@ export default function Sidebar() {
         )}
       </div>
 
-      <div className="p-4 border-t border-slate-800 space-y-2">
+      <div className="p-4 border-t border-slate-800 flex items-center justify-between gap-2">
         <button
           onClick={addChapter}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition-colors"
+          className="w-10 h-10 flex items-center justify-center bg-indigo-600 hover:bg-indigo-700 text-white rounded-full transition-all hover:scale-110 active:scale-95 shadow-lg shadow-indigo-500/20"
+          title="新建章节"
         >
-          <Plus className="w-4 h-4" />
-          新建章节
+          <Plus className="w-5 h-5" />
         </button>
         
         <input
@@ -143,10 +148,26 @@ export default function Sidebar() {
         />
         <button
           onClick={() => fileInputRef.current?.click()}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm font-medium transition-colors"
+          className="w-10 h-10 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-full transition-all hover:scale-110 active:scale-95"
+          title="导入本地小说 (MD)"
         >
-          <Upload className="w-4 h-4" />
-          导入本地小说 (MD)
+          <Upload className="w-5 h-5" />
+        </button>
+
+        <button
+          onClick={() => setIsSettingsOpen(true)}
+          className="w-10 h-10 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-full transition-all hover:scale-110 active:scale-95"
+          title="API 设置"
+        >
+          <Settings className="w-5 h-5" />
+        </button>
+
+        <button
+          onClick={() => setIsConsoleOpen(true)}
+          className="w-10 h-10 flex items-center justify-center bg-slate-800/50 hover:bg-slate-700 text-slate-400 hover:text-indigo-400 rounded-full transition-all hover:scale-110 active:scale-95 border border-slate-700/50"
+          title="API 控制台"
+        >
+          <Terminal className="w-5 h-5" />
         </button>
       </div>
     </div>

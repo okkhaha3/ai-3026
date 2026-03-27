@@ -35,6 +35,18 @@ export interface PlotThread {
   status: 'open' | 'resolved';
 }
 
+export interface StyleProfile {
+  description: string;
+  pacing: number; // 1-5 (1: Slow, 5: Fast)
+  diction: 'colloquial' | 'literary' | 'archaic' | 'hardcore';
+  sentenceStructure: 'short' | 'mixed' | 'long';
+  sensoryFocus: string[]; // ['visual', 'auditory', 'olfactory', 'tactile', 'gustatory', 'psychological']
+  perspective: 'first' | 'third-limited' | 'third-omniscient';
+  forbiddenWords: string[];
+  signaturePatterns: string[];
+  sampleAnalysis?: string;
+}
+
 export interface WorldState {
   rules: string[];
   characters: Character[];
@@ -45,7 +57,7 @@ export interface WorldState {
   };
   pastEvents: string[];
   threads: PlotThread[];
-  styleProfile: string;
+  style: StyleProfile;
 }
 
 export interface ChatMessage {
@@ -67,4 +79,28 @@ export interface LoreEntry {
 
 export interface ChapterLore {
   lore: LoreEntry[];
+}
+
+export interface ApiSettings {
+  provider: 'gemini' | 'openai';
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+}
+
+export interface ApiLog {
+  id: string;
+  timestamp: string;
+  provider: 'gemini' | 'openai';
+  model: string;
+  request: {
+    prompt: string;
+    systemInstruction?: string;
+    responseMimeType?: string;
+    responseSchema?: any;
+  };
+  response: string;
+  status: 'success' | 'error';
+  error?: string;
+  duration: number; // ms
 }

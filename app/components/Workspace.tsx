@@ -1,14 +1,15 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { Chapter, Beat } from '../types';
-import { Loader2, Play, CheckCircle2, Circle, Edit3, Save, Sparkles, BookOpen, PenTool, Search, Maximize2, Minimize2, Check, X } from 'lucide-react';
+import { Loader2, Play, CheckCircle2, Circle, Edit3, Save, Sparkles, BookOpen, PenTool, Search, Maximize2, Minimize2, Check, X, Volume2, VolumeX, Pause, Settings, ChevronUp, ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 export default function Workspace() {
-  const { chapters, setChapters, activeChapterId, getAiClient, setAlertDialog, worldState, setRabbitHole, isDigging, setIsDigging, isPolishing, setIsPolishing } = useAppContext();
+  const { chapters, setChapters, activeChapterId, callAi, setAlertDialog, worldState, setWorldState, setRabbitHole, isDigging, setIsDigging, isPolishing, setIsPolishing, isZenMode, setIsZenMode, isExtracting, setIsExtracting, apiSettings, getStylePrompt } = useAppContext();
+  const activeChapter = chapters.find(ch => ch.id === activeChapterId);
   const [activeTab, setActiveTab] = useState<'reader' | 'writer'>('reader');
   const [isEditingContent, setIsEditingContent] = useState(false);
   const [editedContent, setEditedContent] = useState('');
@@ -16,6 +17,68 @@ export default function Workspace() {
   const [isDrafting, setIsDrafting] = useState(false);
   const [selection, setSelection] = useState<{ text: string; x: number; y: number } | null>(null);
   const [polishResult, setPolishResult] = useState<{ original: string, polished: string } | null>(null);
+
+  // Auto-Read State
+  const [isAutoScrolling, setIsAutoScrolling] = useState(false);
+  const [scrollSpeed, setScrollSpeed] = useState(1); // 1-10
+  const [isTtsPlaying, setIsTtsPlaying] = useState(false);
+  const [showReadSettings, setShowReadSettings] = useState(false);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const scrollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Zen Mode shortcut
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'z' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        setIsZenMode(!isZenMode);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isZenMode, setIsZenMode]);
+
+  // Auto-Scrolling Logic
+  useEffect(() => {
+    if (isAutoScrolling && scrollContainerRef.current) {
+      const scroll = () => {
+        if (scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTop += scrollSpeed;
+          // Stop if reached bottom
+          if (scrollContainerRef.current.scrollTop + scrollContainerRef.current.clientHeight >= scrollContainerRef.current.scrollHeight) {
+            setIsAutoScrolling(false);
+          }
+        }
+      };
+      scrollIntervalRef.current = setInterval(scroll, 50);
+    } else {
+      if (scrollIntervalRef.current) clearInterval(scrollIntervalRef.current);
+    }
+    return () => {
+      if (scrollIntervalRef.current) clearInterval(scrollIntervalRef.current);
+    };
+  }, [isAutoScrolling, scrollSpeed]);
+
+  // TTS Logic
+  const handleTts = useCallback(() => {
+    if (!activeChapter?.content) return;
+
+    if (isTtsPlaying) {
+      window.speechSynthesis.cancel();
+      setIsTtsPlaying(false);
+    } else {
+      const utterance = new SpeechSynthesisUtterance(activeChapter.content.replace(/[#*`]/g, ''));
+      utterance.lang = 'zh-CN';
+      utterance.rate = 1.0;
+      utterance.onend = () => setIsTtsPlaying(false);
+      window.speechSynthesis.speak(utterance);
+      setIsTtsPlaying(true);
+    }
+  }, [activeChapter?.content, isTtsPlaying]);
+
+  useEffect(() => {
+    return () => window.speechSynthesis.cancel();
+  }, []);
 
   useEffect(() => {
     const handleMouseUp = () => {
@@ -40,8 +103,6 @@ export default function Workspace() {
 
   const handlePolish = async (type: 'expand' | 'rewrite' | 'shorten') => {
     if (!selection) return;
-    const ai = getAiClient();
-    if (!ai) return;
     setIsPolishing(true);
     try {
       let instruction = '';
@@ -51,18 +112,17 @@ export default function Workspace() {
       
       const prompt = `你是一个顶级的文学编辑。${instruction}
       
-      文风基调要求：${worldState.styleProfile || '无特殊要求'}
+      ${getStylePrompt()}
       
       原文本：
       "${selection.text}"
       
       请直接输出修改后的文本，不要包含任何解释、引号或标题。`;
       
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-pro-preview',
-        contents: prompt,
+      const responseText = await callAi({
+        prompt: prompt,
       });
-      setPolishResult({ original: selection.text, polished: response.text?.trim() || '' });
+      setPolishResult({ original: selection.text, polished: responseText.trim() || '' });
     } catch (error) {
       console.error(error);
       setAlertDialog({ isOpen: true, message: "润色失败，请重试。" });
@@ -84,8 +144,6 @@ export default function Workspace() {
   const digRabbitHole = async () => {
     if (!selection) return;
     const term = selection.text;
-    const ai = getAiClient();
-    if (!ai) return;
 
     setIsDigging(true);
     try {
@@ -95,12 +153,11 @@ export default function Workspace() {
       当前章节上下文：
       ${activeChapter?.content.substring(0, 3000)}`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: prompt,
+      const responseText = await callAi({
+        prompt: prompt,
       });
 
-      setRabbitHole({ term, explanation: response.text || "无法生成解释。" });
+      setRabbitHole({ term, explanation: responseText || "无法生成解释。" });
     } catch (error) {
       console.error(error);
       setAlertDialog({ isOpen: true, message: "生成解释失败，请重试。" });
@@ -109,8 +166,6 @@ export default function Workspace() {
       setSelection(null);
     }
   };
-
-  const activeChapter = chapters.find(ch => ch.id === activeChapterId);
 
   useEffect(() => {
     if (activeChapter) {
@@ -134,12 +189,121 @@ export default function Workspace() {
   const handleSaveContent = () => {
     updateChapter({ content: editedContent });
     setIsEditingContent(false);
+    // Trigger background extraction and summarization
+    if (activeChapter) {
+      extractKnowledge(editedContent);
+      summarizeChapter(activeChapter.id, editedContent);
+    }
+  };
+
+  const extractKnowledge = async (content: string) => {
+    if (!content || content.length < 100) return;
+    setIsExtracting(true);
+    try {
+      const prompt = `你是一个顶级文学编辑和世界观架构师。请从以下小说正文中提取并更新世界观设定。
+      
+      当前正文：
+      ${content}
+      
+      当前世界观：
+      ${JSON.stringify(worldState)}
+      
+      请识别并返回一个 JSON 对象，包含：
+      1. "newCharacters": 数组，包含新出现的角色或已有角色的状态更新（id, name, state, knowledge, location, inventory）。
+      2. "newRules": 数组，包含新发现的世界规则。
+      3. "newThreads": 数组，包含新出现的伏笔或已有伏笔的状态更新（id, title, description, status）。
+      4. "pastEvents": 字符串数组，包含本章发生的重大事件。
+      
+      要求：
+      1. 必须使用中文输出。
+      2. 如果是已有角色/伏笔，请保持 ID 一致。如果是新角色/伏笔，请生成唯一 ID。
+      3. 仅提取真正重要的信息。
+      4. 严格遵守 JSON 格式。`;
+
+      const responseText = await callAi({
+        prompt: prompt,
+        responseMimeType: "application/json",
+      });
+
+      const result = JSON.parse(responseText || '{}');
+      
+      setWorldState(prev => {
+        const updatedCharacters = [...prev.characters];
+        (result.newCharacters || []).forEach((nc: any) => {
+          const idx = updatedCharacters.findIndex(c => c.id === nc.id || (nc.name && c.name === nc.name));
+          if (idx !== -1) updatedCharacters[idx] = { ...updatedCharacters[idx], ...nc };
+          else if (nc.name) updatedCharacters.push({ id: `char-${Date.now()}-${Math.random()}`, ...nc });
+        });
+
+        const updatedThreads = [...(prev.threads || [])];
+        (result.newThreads || []).forEach((nt: any) => {
+          const idx = updatedThreads.findIndex(t => t.id === nt.id || (nt.title && t.title === nt.title));
+          if (idx !== -1) updatedThreads[idx] = { ...updatedThreads[idx], ...nt };
+          else if (nt.title) updatedThreads.push({ id: `thread-${Date.now()}-${Math.random()}`, ...nt });
+        });
+
+        return {
+          ...prev,
+          rules: Array.from(new Set([...prev.rules, ...(result.newRules || [])])),
+          characters: updatedCharacters,
+          threads: updatedThreads,
+          pastEvents: Array.from(new Set([...prev.pastEvents, ...(result.pastEvents || [])])).slice(-20)
+        };
+      });
+    } catch (error) {
+      console.error("Knowledge extraction failed:", error);
+    } finally {
+      setIsExtracting(false);
+    }
+  };
+
+  const summarizeChapter = async (chapterId: string, content: string) => {
+    if (!content || content.length < 100) return;
+    try {
+      const prompt = `请为以下小说章节写一个简洁的摘要（约 100-200 字），重点描述核心剧情进展、角色变化和新出现的伏笔。
+      
+      章节内容：
+      ${content}
+      
+      请直接输出摘要文本。`;
+
+      const responseText = await callAi({
+        prompt: prompt,
+      });
+
+      setChapters(prev => prev.map(ch => ch.id === chapterId ? { ...ch, summary: responseText.trim() } : ch));
+    } catch (error: any) {
+      if (error?.message?.includes('429') || error?.status === 429) {
+        console.error("Summarization failed due to rate limit (429).");
+      } else {
+        console.error("Summarization failed:", error);
+      }
+    }
+  };
+
+  const retrieveRelevantContext = async (beatDescription: string) => {
+    const allSummaries = chapters.map(c => `【${c.title}】: ${c.summary || c.content.slice(0, 200)}`).join('\n');
+    
+    const prompt = `你是一个文学档案管理员。请根据当前要写的场景节拍，从以下章节摘要中检索出最相关的背景信息、伏笔或角色经历。
+    
+    当前节拍：${beatDescription}
+    
+    所有章节摘要：
+    ${allSummaries}
+    
+    请提取出与当前节拍最相关的 3-5 条关键信息，用于辅助写作。直接输出提取的信息，不要包含解释。`;
+
+    try {
+      const responseText = await callAi({
+        prompt: prompt,
+      });
+      return responseText || "";
+    } catch (e) {
+      return "";
+    }
   };
 
   const planBeats = async () => {
-    const ai = getAiClient();
-    if (!ai) return;
-
     setIsPlanning(true);
     updateChapter({ status: 'planning' });
 
@@ -149,7 +313,7 @@ export default function Workspace() {
       世界规则：${worldState.rules.join(' | ')}
       角色状态：${JSON.stringify(worldState.characters)}
       过去事件：${worldState.pastEvents.slice(-5).join(' | ')}
-      文风基调：${worldState.styleProfile || '无特殊要求'}
+      ${getStylePrompt()}
       未回收的伏笔：${(worldState.threads || []).filter(t => t.status === 'open').map(t => t.title + ': ' + t.description).join(' | ') || '无'}
       
       当前章节标题：${activeChapter.title}
@@ -163,23 +327,20 @@ export default function Workspace() {
       2. 构思时，请尽量贴合【文风基调】。
       3. 视剧情发展情况，考虑是否在节拍中推进或回收【未回收的伏笔】。`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-pro-preview',
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: "OBJECT",
-            properties: {
-              intent: { type: "STRING" },
-              beats: { type: "ARRAY", items: { type: "STRING" } }
-            },
-            required: ["intent", "beats"]
-          }
+      const responseText = await callAi({
+        prompt: prompt,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "OBJECT",
+          properties: {
+            intent: { type: "STRING" },
+            beats: { type: "ARRAY", items: { type: "STRING" } }
+          },
+          required: ["intent", "beats"]
         }
       });
 
-      const result = JSON.parse(response.text || '{}');
+      const result = JSON.parse(responseText || '{}');
       if (result.beats && Array.isArray(result.beats)) {
         const newBeats: Beat[] = result.beats.map((desc: string, i: number) => ({
           id: `beat-${Date.now()}-${i}`,
@@ -197,9 +358,6 @@ export default function Workspace() {
   };
 
   const executeBeat = async (beatId: string) => {
-    const ai = getAiClient();
-    if (!ai) return;
-
     const beatIndex = activeChapter.beats.findIndex(b => b.id === beatId);
     if (beatIndex === -1) return;
 
@@ -211,48 +369,72 @@ export default function Workspace() {
     updateChapter({ beats: updatedBeats });
 
     try {
-      // Build previous context
+      // 1. RAG Retrieval
+      const relevantContext = await retrieveRelevantContext(beat.description);
+
+      // 2. Memory Tree Context Assembly
       const currentIndex = chapters.findIndex(c => c.id === activeChapter.id);
       const previousChapters = chapters.slice(0, currentIndex);
-      const previousContext = previousChapters.map(c => `【${c.title}】摘要/结尾: ${c.content.slice(-800)}`).join('\n');
-      const currentChapterContext = activeChapter.content.slice(-1500);
+      
+      // Level 1: Global Settings
+      const globalSettings = `世界规则：${(worldState.rules || []).join(' | ')}\n角色状态：${JSON.stringify(worldState.characters || [])}\n未回收伏笔：${(worldState.threads || []).filter(t => t.status === 'open').map(t => t.title).join(', ')}`;
+      
+      // Level 2: Volume Summaries (older chapters)
+      const volumeSummaries = previousChapters.slice(0, -5).map(c => `【${c.title}】摘要: ${c.summary || c.content.slice(0, 300)}`).join('\n');
+      
+      // Level 3: Recent 5 Chapters Summaries
+      const recentSummaries = previousChapters.slice(-5).map(c => `【${c.title}】摘要: ${c.summary || c.content.slice(0, 500)}`).join('\n');
+      
+      // Level 4: Current Chapter Full Text
+      const currentChapterFullText = activeChapter.content;
 
-      const prompt = `你是一个顶级小说家。请根据以下设定、前文上下文和当前场景节拍，撰写一段引人入胜的小说正文。
+      const prompt = `你是一个顶级小说家。请根据以下“多层级记忆树”上下文、检索到的相关信息和当前场景节拍，撰写一段引人入胜的小说正文。
       
-      世界规则：${worldState.rules.join(' | ')}
-      角色状态：${JSON.stringify(worldState.characters)}
-      文风基调：${worldState.styleProfile || '无特殊要求'}
-      未回收的伏笔：${(worldState.threads || []).filter(t => t.status === 'open').map(t => t.title + ': ' + t.description).join(' | ') || '无'}
+      ### 第一层：全局设定 (Global Settings)
+      ${globalSettings}
       
-      前情提要：
-      ${previousContext || '无'}
+      ### 第二层：卷宗摘要 (Volume Summaries)
+      ${volumeSummaries || '无'}
       
+      ### 第三层：最近 5 章摘要 (Recent Summaries)
+      ${recentSummaries || '无'}
+      
+      ### 第四层：当前章全文 (Current Chapter)
+      ${currentChapterFullText || '（本章刚开始）'}
+      
+      ### 检索到的相关背景/伏笔 (Retrieved Context)
+      ${relevantContext || '无'}
+      
+      ---
+      当前需要撰写的场景节拍：${beat.description}
       本章意图：${activeChapter.intent}
-      本章已有内容：
-      ${currentChapterContext || '无'}
-      
-      当前需要撰写的节拍：${beat.description}
+      ${getStylePrompt()}
       
       要求：
       1. 必须使用中文输出。
       2. 严格遵循设定的【文风基调】，消除 AI 味。
-      3. 贯彻 "Show, Don't Tell" (展示，而不是告知) 原则，增加画面感和感官细节。
+      3. 贯彻 "Show, Don't Tell" 原则，增加画面感和感官细节。
       4. 承接上文语气，自然过渡，不要重复上文已经写过的内容。
-      5. 如果当前节拍涉及到【未回收的伏笔】，请自然地将其融入正文中。
-      6. 直接输出小说正文，不要包含任何多余的解释或标题。`;
+      5. 确保角色行为符合其在“全局设定”中的性格和当前状态。
+      6. 如果当前节拍涉及到检索到的伏笔，请自然地将其融入正文中。
+      7. 直接输出小说正文，不要包含任何多余的解释或标题。`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-pro-preview',
-        contents: prompt,
+      const responseText = await callAi({
+        prompt: prompt,
       });
 
-      const generatedText = response.text || '';
+      const generatedText = responseText || '';
       
+      const finalContent = activeChapter.content + (activeChapter.content ? '\n\n' : '') + generatedText;
       updatedBeats[beatIndex].status = 'completed';
       updateChapter({ 
         beats: updatedBeats,
-        content: activeChapter.content + (activeChapter.content ? '\n\n' : '') + generatedText
+        content: finalContent
       });
+      
+      // Trigger background extraction and summarization after AI drafting
+      extractKnowledge(finalContent);
+      summarizeChapter(activeChapter.id, finalContent);
       
       // Auto-switch to reader tab to see the new content
       setActiveTab('reader');
@@ -291,20 +473,68 @@ export default function Workspace() {
       </div>
 
       {/* Content Area */}
-      <div className="flex-1 overflow-y-auto p-8">
+      <div 
+        ref={scrollContainerRef}
+        className={`flex-1 overflow-y-auto p-4 sm:p-8 bg-white transition-all duration-500 ${isZenMode ? 'px-12 sm:px-24' : ''}`}
+      >
         <div className="max-w-3xl mx-auto">
           {activeTab === 'reader' ? (
             <div className="space-y-6">
-              <div className="flex justify-end mb-4">
-                {isEditingContent ? (
-                  <button onClick={handleSaveContent} className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium">
-                    <Save className="w-4 h-4" /> 保存正文
+              {/* Auto-Read Controls */}
+              <div className="sticky top-0 z-10 bg-white/80 backdrop-blur-md border border-slate-200 rounded-xl p-3 mb-8 flex items-center justify-between shadow-sm">
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => setIsAutoScrolling(!isAutoScrolling)}
+                    className={`p-2 rounded-lg transition-colors ${isAutoScrolling ? 'bg-indigo-100 text-indigo-600' : 'hover:bg-slate-100 text-slate-600'}`}
+                    title={isAutoScrolling ? "停止自动滚动" : "开始自动滚动"}
+                  >
+                    {isAutoScrolling ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
                   </button>
-                ) : (
-                  <button onClick={() => setIsEditingContent(true)} className="flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 transition-colors text-sm font-medium">
-                    <Edit3 className="w-4 h-4" /> 编辑正文
+                  <button 
+                    onClick={handleTts}
+                    className={`p-2 rounded-lg transition-colors ${isTtsPlaying ? 'bg-rose-100 text-rose-600' : 'hover:bg-slate-100 text-slate-600'}`}
+                    title={isTtsPlaying ? "停止朗读" : "开始朗读"}
+                  >
+                    {isTtsPlaying ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
                   </button>
-                )}
+                  <div className="h-6 w-px bg-slate-200 mx-1" />
+                  <div className="flex items-center gap-2 px-2">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider hidden sm:inline">速度</span>
+                    <input 
+                      type="range" 
+                      min="1" 
+                      max="10" 
+                      step="1"
+                      value={scrollSpeed}
+                      onChange={(e) => setScrollSpeed(parseInt(e.target.value))}
+                      className="w-16 sm:w-24 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                    />
+                    <span className="text-xs font-mono text-indigo-600 w-4">{scrollSpeed}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => setIsZenMode(!isZenMode)}
+                    className={`p-2 rounded-lg transition-colors ${isZenMode ? 'bg-amber-100 text-amber-600' : 'hover:bg-slate-100 text-slate-600'}`}
+                    title={isZenMode ? "退出沉浸模式" : "进入沉浸模式 (Ctrl+Z)"}
+                  >
+                    {isZenMode ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+                  </button>
+                  {isEditingContent ? (
+                    <button onClick={handleSaveContent} className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-xs font-medium">
+                      <Save className="w-3.5 h-3.5" /> 保存
+                    </button>
+                  ) : (
+                    <button onClick={() => setIsEditingContent(true)} className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 transition-colors text-xs font-medium">
+                      <Edit3 className="w-3.5 h-3.5" /> 编辑
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="mb-8">
+                <h2 className={`font-bold text-slate-900 font-serif transition-all duration-500 ${isZenMode ? 'text-4xl mb-12 text-center' : 'text-3xl mb-4'}`}>{activeChapter.title}</h2>
               </div>
 
               {isEditingContent ? (
@@ -315,7 +545,7 @@ export default function Workspace() {
                   placeholder="在此输入正文..."
                 />
               ) : (
-                <div className="prose prose-lg prose-slate max-w-none font-serif leading-loose">
+                <div className={`prose prose-slate max-w-none font-serif leading-loose transition-all duration-500 ${isZenMode ? 'prose-xl text-slate-800' : 'prose-lg'}`}>
                   {activeChapter.content ? (
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{activeChapter.content}</ReactMarkdown>
                   ) : (
@@ -325,6 +555,12 @@ export default function Workspace() {
                   )}
                 </div>
               )}
+              
+              {/* Progress Indicator */}
+              <div className="mt-20 pt-8 border-t border-slate-100 flex items-center justify-between text-slate-400 text-sm italic">
+                <span>本章结束</span>
+                <span>{activeChapter.content?.length || 0} 字</span>
+              </div>
             </div>
           ) : (
             <div className="space-y-8">

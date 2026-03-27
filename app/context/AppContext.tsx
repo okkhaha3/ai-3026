@@ -84,7 +84,8 @@ interface AppContextType {
   testApiConnection: (settings: ApiSettings) => Promise<{ success: boolean; message: string }>;
   fetchModels: (settings: ApiSettings) => Promise<string[]>;
   handleClearData: () => void;
-  getStylePrompt: () => string;
+  getStylePrompt: (volumeId?: string) => string;
+  extractJson: (text: string) => any;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -92,8 +93,10 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 export const DEFAULT_WORLD_STATE: WorldState = {
   rules: ['魔法需要消耗精神力', '龙族已经灭绝'],
   characters: [
-    { id: 'char-1', name: '艾伦', state: '健康', knowledge: '初级魔法', location: '新手村', inventory: '木剑' }
+    { id: 'char-1', name: '艾伦', role: 'protagonist', state: '健康', knowledge: '初级魔法', location: '新手村', inventory: '木剑', description: '故事的主角，一名渴望成为魔法师的少年。' }
   ],
+  relationships: [],
+  lore: [],
   ledger: { time: '纪元100年', resources: '金币: 100', notes: '主角刚刚苏醒' },
   pastEvents: ['大灾变发生'],
   threads: [],
@@ -107,7 +110,8 @@ export const DEFAULT_WORLD_STATE: WorldState = {
     forbiddenWords: ['然而', '总之', '不禁', '仿佛'],
     signaturePatterns: [],
     sampleAnalysis: ''
-  }
+  },
+  volumes: []
 };
 
 export const AppProvider = ({ children }: { children: ReactNode }) => {
@@ -451,9 +455,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   const clearApiLogs = () => setApiLogs([]);
 
-  const getStylePrompt = () => {
-    if (!worldState.style) return "【文风与基调设定】\n- 核心描述：无";
-    const { style } = worldState;
+  const getStylePrompt = (volumeId?: string) => {
+    let style = worldState.style;
+    if (volumeId) {
+      const volume = worldState.volumes.find(v => v.id === volumeId);
+      if (volume && volume.styleProfile) {
+        style = volume.styleProfile;
+      }
+    }
+    if (!style) return "【文风与基调设定】\n- 核心描述：无";
+    
     const pacingMap = ['极慢', '舒缓', '中等', '紧凑', '极快'];
     const dictionMap = { colloquial: '通俗白话', literary: '文学雅致', archaic: '古风/半文白', hardcore: '冷峻硬核' };
     const structureMap = { short: '短句为主', mixed: '长短结合', long: '长句/西化' };
@@ -461,7 +472,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     const perspectiveMap = { first: '第一人称', 'third-limited': '第三人称限知', 'third-omniscient': '第三人称全知' };
 
     return `
-【文风与基调设定】
+【文风与基调设定】${volumeId ? ' (当前卷专属)' : ''}
 - 核心描述：${style.description || '无'}
 - 叙事节奏：${pacingMap[style.pacing - 1] || '中等'}
 - 用词风格：${dictionMap[style.diction] || '文学雅致'}
@@ -472,6 +483,49 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 - 标志性表达/修辞：${(style.signaturePatterns || []).join('、') || '无'}
 ${style.sampleAnalysis ? `- 样本分析参考：${style.sampleAnalysis}` : ''}
     `.trim();
+  };
+
+  const extractJson = (text: string) => {
+    if (!text) return null;
+    try {
+      // Try direct parse first
+      return JSON.parse(text);
+    } catch (e) {
+      // Try to extract from markdown code blocks
+      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      if (jsonMatch && jsonMatch[1]) {
+        try {
+          return JSON.parse(jsonMatch[1].trim());
+        } catch (innerError) {
+          console.error("Failed to parse extracted JSON:", innerError);
+        }
+      }
+      
+      // Try to find the first { and last }
+      const firstBrace = text.indexOf('{');
+      const lastBrace = text.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        try {
+          return JSON.parse(text.substring(firstBrace, lastBrace + 1));
+        } catch (innerError) {
+          console.error("Failed to parse JSON from braces:", innerError);
+        }
+      }
+
+      // Try to find the first [ and last ]
+      const firstBracket = text.indexOf('[');
+      const lastBracket = text.lastIndexOf(']');
+      if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+        try {
+          return JSON.parse(text.substring(firstBracket, lastBracket + 1));
+        } catch (innerError) {
+          console.error("Failed to parse JSON from brackets:", innerError);
+        }
+      }
+
+      console.error("Could not extract valid JSON from text:", text);
+      return null;
+    }
   };
 
   return (
@@ -507,7 +561,8 @@ ${style.sampleAnalysis ? `- 样本分析参考：${style.sampleAnalysis}` : ''}
       clearApiLogs,
       rabbitHole, setRabbitHole,
       getAiClient, getOpenAiClient, callAi, callAiWithRetry, testApiConnection, fetchModels, handleClearData,
-      getStylePrompt
+      getStylePrompt,
+      extractJson
     }}>
       {children}
     </AppContext.Provider>

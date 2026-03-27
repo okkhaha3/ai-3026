@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useAppContext } from '../context/AppContext';
-import { X, Search, Settings, Loader2, CheckCircle2, AlertCircle, RotateCcw, RefreshCw } from 'lucide-react';
+import { X, Search, Settings, Loader2, CheckCircle2, AlertCircle, RotateCcw, RefreshCw, Book } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import ApiConsole from './ApiConsole';
@@ -16,7 +16,8 @@ export default function Modals() {
     rabbitHole, setRabbitHole,
     isSettingsOpen, setIsSettingsOpen,
     apiSettings, setApiSettings,
-    testApiConnection, fetchModels
+    testApiConnection, fetchModels,
+    worldState, setWorldState
   } = useAppContext();
 
   const [testStatus, setTestStatus] = React.useState<{ loading: boolean; success?: boolean; message?: string }>({ loading: false });
@@ -351,8 +352,35 @@ export default function Modals() {
               <Search className="w-5 h-5 text-purple-500"/> 
               {rabbitHole.term}
             </h3>
-            <div className="prose prose-sm prose-slate max-w-none overflow-y-auto pr-2">
+            <div className="prose prose-sm prose-slate max-w-none overflow-y-auto pr-2 flex-1">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{rabbitHole.explanation}</ReactMarkdown>
+            </div>
+            <div className="mt-6 flex justify-end gap-3 shrink-0">
+              <button 
+                onClick={() => setRabbitHole(null)}
+                className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+              >
+                关闭
+              </button>
+              <button 
+                onClick={() => {
+                  setWorldState(prev => ({
+                    ...prev,
+                    lore: [...(prev.lore || []), {
+                      id: `lore-${Date.now()}`,
+                      concept: rabbitHole.term,
+                      explanation: rabbitHole.explanation,
+                      category: 'other'
+                    }]
+                  }));
+                  setRabbitHole(null);
+                  setAlertDialog({ isOpen: true, message: `已将 "${rabbitHole.term}" 保存至世界法典。` });
+                }}
+                className="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors cursor-pointer flex items-center gap-2"
+              >
+                <Book className="w-4 h-4" />
+                保存至法典
+              </button>
             </div>
           </div>
         </div>

@@ -3,18 +3,25 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { Chapter, Beat } from '../types';
-import { Loader2, Play, CheckCircle2, Circle, Edit3, Save, Sparkles, BookOpen, PenTool, Search, Maximize2, Minimize2, Check, X, Volume2, VolumeX, Pause, Settings, ChevronUp, ChevronDown } from 'lucide-react';
+import { Loader2, Play, CheckCircle2, Circle, Edit3, Save, Sparkles, BookOpen, PenTool, Search, Maximize2, Minimize2, Check, X, Volume2, VolumeX, Pause, Settings, ChevronUp, ChevronDown, Zap, RefreshCw, ShieldCheck, Users } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 export default function Workspace() {
-  const { chapters, setChapters, activeChapterId, callAi, setAlertDialog, worldState, setWorldState, setRabbitHole, isDigging, setIsDigging, isPolishing, setIsPolishing, isZenMode, setIsZenMode, isExtracting, setIsExtracting, apiSettings, getStylePrompt } = useAppContext();
+  const { chapters, setChapters, activeChapterId, callAi, setAlertDialog, worldState, setWorldState, setRabbitHole, isDigging, setIsDigging, isPolishing, setIsPolishing, isZenMode, setIsZenMode, isExtracting, setIsExtracting, apiSettings, getStylePrompt, extractJson } = useAppContext();
+  const chaptersRef = useRef(chapters);
+  useEffect(() => {
+    chaptersRef.current = chapters;
+  }, [chapters]);
   const activeChapter = chapters.find(ch => ch.id === activeChapterId);
+  const activeVolume = worldState.volumes.find(v => v.chapterIds.includes(activeChapterId || ''));
   const [activeTab, setActiveTab] = useState<'reader' | 'writer'>('reader');
   const [isEditingContent, setIsEditingContent] = useState(false);
   const [editedContent, setEditedContent] = useState('');
   const [isPlanning, setIsPlanning] = useState(false);
   const [isDrafting, setIsDrafting] = useState(false);
+  const [syncSuggestions, setSyncSuggestions] = useState<any[]>([]);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [selection, setSelection] = useState<{ text: string; x: number; y: number } | null>(null);
   const [polishResult, setPolishResult] = useState<{ original: string, polished: string } | null>(null);
 
@@ -23,6 +30,16 @@ export default function Workspace() {
   const [scrollSpeed, setScrollSpeed] = useState(1); // 1-10
   const [isTtsPlaying, setIsTtsPlaying] = useState(false);
   const [showReadSettings, setShowReadSettings] = useState(false);
+  const [isCompletingChapter, setIsCompletingChapter] = useState(false);
+  const [genSettings, setGenSettings] = useState({
+    mode: 'single' as 'single' | 'batch' | 'multi-in-one',
+    targetWords: 500,
+    batchCount: 3, // Number of beats to generate in one call when in 'multi-in-one' mode
+    sensoryFocus: [] as string[],
+    pacing: 'balanced' as 'slow' | 'balanced' | 'fast',
+    includeDialogue: true,
+    includeInternalMonologue: true
+  });
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const scrollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -171,7 +188,7 @@ export default function Workspace() {
     if (activeChapter) {
       setEditedContent(activeChapter.content);
     }
-  }, [activeChapter]);
+  }, [activeChapterId]); // Only reset when switching chapters
 
   if (!activeChapter) {
     return (
@@ -211,7 +228,7 @@ export default function Workspace() {
       请识别并返回一个 JSON 对象，包含：
       1. "newCharacters": 数组，包含新出现的角色或已有角色的状态更新（id, name, state, knowledge, location, inventory）。
       2. "newRules": 数组，包含新发现的世界规则。
-      3. "newThreads": 数组，包含新出现的伏笔或已有伏笔的状态更新（id, title, description, status）。
+      3. "newThreads": 数组，包含新出现的伏笔或已有伏笔的状态更新（id, title, description, status）。特别注意：如果本章内容解决了某个已有伏笔，请将其 status 设置为 "resolved"。
       4. "pastEvents": 字符串数组，包含本章发生的重大事件。
       
       要求：
@@ -225,7 +242,7 @@ export default function Workspace() {
         responseMimeType: "application/json",
       });
 
-      const result = JSON.parse(responseText || '{}');
+      const result = extractJson(responseText || '{}');
       
       setWorldState(prev => {
         const updatedCharacters = [...prev.characters];
@@ -308,15 +325,43 @@ export default function Workspace() {
     updateChapter({ status: 'planning' });
 
     try {
-      const prompt = `你是一个顶级小说家和故事架构师。请根据以下世界观设定和前文内容，为当前章节构思一个精彩的大纲和 3-5 个场景节拍（细纲）。
+      const activeCharacters = worldState.characters.filter(c => (activeChapter.characterIds || []).includes(c.id)).map(c => ({
+        name: c.name,
+        role: c.role,
+        description: c.description,
+        state: c.state,
+        knowledge: c.knowledge
+      }));
+      const activeRelationships = (worldState.relationships || []).filter(r => 
+        (activeChapter.characterIds || []).includes(r.sourceId) && (activeChapter.characterIds || []).includes(r.targetId)
+      ).map(r => ({
+        source: worldState.characters.find(c => c.id === r.sourceId)?.name,
+        target: worldState.characters.find(c => c.id === r.targetId)?.name,
+        type: r.type,
+        description: r.description,
+        intensity: r.intensity
+      }));
+      const activeThreads = (worldState.threads || []).filter(t => 
+        ((activeChapter.threadIds || []).includes(t.id)) && 
+        (!t.volumeId || t.volumeId === activeVolume?.id)
+      ).map(t => ({
+        ...t,
+        involvedCharacters: worldState.characters.filter(c => (t.characterIds || []).includes(c.id)).map(c => c.name)
+      }));
+      const activeLore = (worldState.lore || []).map(l => `${l.concept}: ${l.explanation}`).join(' | ');
+      const prompt = `你是一个顶级小说家和故事架构师。请根据以下世界观设定、当前章节涉及角色、角色关系、关联伏笔（及其涉及角色）和前文内容，为当前章节构思一个精彩的大纲和 3-5 个场景节拍（细纲）。
       
       世界规则：${worldState.rules.join(' | ')}
-      角色状态：${JSON.stringify(worldState.characters)}
+      世界法典：${activeLore || '无'}
+      涉及角色：${JSON.stringify(activeCharacters)}
+      角色关系：${JSON.stringify(activeRelationships)}
+      关联伏笔：${JSON.stringify(activeThreads)}
       过去事件：${worldState.pastEvents.slice(-5).join(' | ')}
       ${getStylePrompt()}
-      未回收的伏笔：${(worldState.threads || []).filter(t => t.status === 'open').map(t => t.title + ': ' + t.description).join(' | ') || '无'}
+      未回收的伏笔：${(worldState.threads || []).filter(t => t.status === 'open' && (!t.volumeId || t.volumeId === activeVolume?.id)).map(t => t.title + ': ' + t.description).join(' | ') || '无'}
       
       当前章节标题：${activeChapter.title}
+      当前章节意图：${activeChapter.intent}
       
       请返回一个 JSON 对象，包含：
       1. "intent": 字符串，本章的宏观意图或核心冲突。
@@ -325,7 +370,7 @@ export default function Workspace() {
       要求：
       1. 必须使用中文输出，并且严格遵守 JSON 格式。
       2. 构思时，请尽量贴合【文风基调】。
-      3. 视剧情发展情况，考虑是否在节拍中推进或回收【未回收的伏笔】。`;
+      3. 视剧情发展情况，考虑是否在节拍中推进或回收【关联伏笔】。`;
 
       const responseText = await callAi({
         prompt: prompt,
@@ -340,12 +385,14 @@ export default function Workspace() {
         }
       });
 
-      const result = JSON.parse(responseText || '{}');
-      if (result.beats && Array.isArray(result.beats)) {
+      const result = extractJson(responseText || '{}');
+      if (result && result.beats && Array.isArray(result.beats)) {
         const newBeats: Beat[] = result.beats.map((desc: string, i: number) => ({
           id: `beat-${Date.now()}-${i}`,
           description: desc,
-          status: 'pending'
+          status: 'pending',
+          characterIds: [],
+          threadId: undefined
         }));
         updateChapter({ intent: result.intent || '', beats: newBeats, status: 'drafting' });
       }
@@ -357,12 +404,219 @@ export default function Workspace() {
     }
   };
 
-  const executeBeat = async (beatId: string) => {
+  const suggestPlot = async () => {
+    setIsPlanning(true);
+    try {
+      const openThreads = (worldState.threads || []).filter(t => t.status === 'open');
+      const activeCharacters = worldState.characters.filter(c => (activeChapter.characterIds || []).includes(c.id)).map(c => ({
+        name: c.name,
+        role: c.role,
+        description: c.description
+      }));
+      const activeRelationships = (worldState.relationships || []).filter(r => 
+        (activeChapter.characterIds || []).includes(r.sourceId) && (activeChapter.characterIds || []).includes(r.targetId)
+      ).map(r => ({
+        source: worldState.characters.find(c => c.id === r.sourceId)?.name,
+        target: worldState.characters.find(c => c.id === r.targetId)?.name,
+        type: r.type,
+        description: r.description,
+        intensity: r.intensity
+      }));
+      const activeLore = (worldState.lore || []).map(l => `${l.concept}: ${l.explanation}`).join(' | ');
+
+      const prompt = `你是一个顶级小说家和故事架构师。请根据以下世界观设定、当前章节涉及角色、角色关系、以及所有【未回收的伏笔】，为当前章节建议 1-2 个新的场景节拍，旨在推进或回收这些伏笔。
+      
+      世界规则：${worldState.rules.join(' | ')}
+      世界法典：${activeLore || '无'}
+      涉及角色：${JSON.stringify(activeCharacters)}
+      角色关系：${JSON.stringify(activeRelationships)}
+      未回收的伏笔：${openThreads.map(t => t.title + ': ' + t.description).join(' | ')}
+      
+      当前章节标题：${activeChapter.title}
+      当前章节意图：${activeChapter.intent}
+      当前已有节拍：${activeChapter.beats.map(b => b.description).join(' | ')}
+      
+      请返回一个 JSON 对象，包含：
+      1. "suggestedBeats": 数组，每个元素包含 "description" (节拍描述) 和 "threadId" (关联的伏笔 ID，如果有)。
+      
+      要求：
+      1. 必须使用中文输出，并且严格遵守 JSON 格式。
+      2. 建议的节拍应具有戏剧张力，且逻辑自洽。`;
+
+      const responseText = await callAi({
+        prompt: prompt,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "OBJECT",
+          properties: {
+            suggestedBeats: {
+              type: "ARRAY",
+              items: {
+                type: "OBJECT",
+                properties: {
+                  description: { type: "STRING" },
+                  threadId: { type: "STRING" }
+                },
+                required: ["description"]
+              }
+            }
+          },
+          required: ["suggestedBeats"]
+        }
+      });
+
+      const result = extractJson(responseText || '{}');
+      if (result && result.suggestedBeats && Array.isArray(result.suggestedBeats)) {
+        const newBeats: Beat[] = result.suggestedBeats.map((s: any, i: number) => ({
+          id: `beat-suggest-${Date.now()}-${i}`,
+          description: s.description,
+          status: 'pending',
+          characterIds: [],
+          threadId: s.threadId
+        }));
+        updateChapter({ beats: [...activeChapter.beats, ...newBeats] });
+        setAlertDialog({ isOpen: true, message: `AI 建议了 ${newBeats.length} 个新节拍，已添加到列表中。` });
+      }
+    } catch (error) {
+      console.error(error);
+      setAlertDialog({ isOpen: true, message: "获取剧情建议失败，请重试。" });
+    } finally {
+      setIsPlanning(false);
+    }
+  };
+
+  const analyzeWorldStateSync = async (prose: string, beat: Beat) => {
+    setIsSyncing(true);
+    try {
+      const beatCharacters = worldState.characters.filter(c => (beat.characterIds || []).includes(c.id));
+      const beatRelationships = (worldState.relationships || []).filter(r => 
+        (beat.characterIds || []).includes(r.sourceId) && (beat.characterIds || []).includes(r.targetId)
+      );
+
+      const prompt = `你是一个顶级文学编辑和世界观架构师。请分析以下新撰写的小说正文，并根据情节发展，建议对涉及角色和关系的【状态同步】。
+      
+      ### 涉及角色当前状态：
+      ${JSON.stringify(beatCharacters)}
+      
+      ### 涉及角色当前关系：
+      ${JSON.stringify(beatRelationships.map(r => ({
+        source: worldState.characters.find(c => c.id === r.sourceId)?.name,
+        target: worldState.characters.find(c => c.id === r.targetId)?.name,
+        type: r.type,
+        intensity: r.intensity
+      })))}
+      
+      ### 新撰写的正文：
+      ${prose}
+      
+      ---
+      请根据正文内容，判断角色是否获得了新知识、改变了位置、更新了状态（如受伤、疲惫、情绪变化）、获得了新物品，或者角色间的关系是否发生了质变或强度增减。
+      
+      请返回一个 JSON 数组，每个对象包含：
+      1. "type": "character" 或 "relationship"
+      2. "id": 对应的角色 ID 或关系 ID
+      3. "field": 要更新的字段（character: state, knowledge, location, inventory; relationship: type, intensity, description）
+      4. "newValue": 新的值
+      5. "reason": 简短的理由
+      
+      如果没有显著变化，请返回空数组 []。`;
+
+      const responseText = await callAi({
+        customModel: "gemini-3-flash-preview",
+        prompt: prompt,
+        responseMimeType: "application/json"
+      });
+
+      const suggestions = extractJson(responseText || '[]');
+      if (suggestions && suggestions.length > 0) {
+        setSyncSuggestions(suggestions);
+      }
+    } catch (error) {
+      console.error("World state sync analysis failed:", error);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const applySyncSuggestions = () => {
+    let newWorldState = { ...worldState };
+    
+    syncSuggestions.forEach(s => {
+      if (s.type === 'character') {
+        newWorldState.characters = newWorldState.characters.map(c => 
+          c.id === s.id ? { ...c, [s.field]: s.newValue } : c
+        );
+      } else if (s.type === 'relationship') {
+        newWorldState.relationships = newWorldState.relationships.map(r => 
+          r.id === s.id ? { ...r, [s.field]: s.newValue } : r
+        );
+      }
+    });
+    
+    setWorldState(newWorldState);
+    setSyncSuggestions([]);
+    setAlertDialog({ isOpen: true, message: `已同步 ${syncSuggestions.length} 项世界状态变更。` });
+  };
+
+  const completeChapter = async () => {
+    if (!activeChapter || !activeChapter.content) {
+      setAlertDialog({ isOpen: true, message: '章节内容为空，无法完成。' });
+      return;
+    }
+
+    setIsCompletingChapter(true);
+    try {
+      const prompt = `你是一个专业的文学编辑。请阅读以下小说章节内容，并提取出 1-3 句最核心的事件摘要（约 50-100 字），这将作为“过去事件 (Past Events)”被记录在世界状态中，供后续章节参考。
+      
+      章节内容：
+      ${activeChapter.content.slice(0, 3000)}... (截取部分)
+      
+      请直接返回摘要文本，不要包含任何其他解释或格式。`;
+
+      const summaryText = await callAi({
+        customModel: "gemini-3-flash-preview",
+        prompt: prompt,
+      });
+
+      if (summaryText) {
+        const newSummary = `【${activeChapter.title}】${summaryText.trim()}`;
+        
+        // Update chapter status and summary
+        updateChapter({ 
+          status: 'completed',
+          summary: newSummary
+        });
+
+        // Update or append to worldState.pastEvents
+        setWorldState(prev => {
+          const pastEvents = prev.pastEvents || [];
+          const existingIndex = pastEvents.findIndex(e => e.startsWith(`【${activeChapter.title}】`));
+          
+          if (existingIndex >= 0) {
+            const newPastEvents = [...pastEvents];
+            newPastEvents[existingIndex] = newSummary;
+            return { ...prev, pastEvents: newPastEvents };
+          } else {
+            return { ...prev, pastEvents: [...pastEvents, newSummary] };
+          }
+        });
+
+        setAlertDialog({ isOpen: true, message: '章节已完成！摘要已同步至世界状态的“过去事件”中。' });
+      }
+    } catch (error) {
+      console.error("Failed to complete chapter:", error);
+      setAlertDialog({ isOpen: true, message: '生成章节摘要失败，请重试。' });
+    } finally {
+      setIsCompletingChapter(false);
+    }
+  };
+
+  const executeBeat = async (beatId: string, isBatch = false) => {
     const beatIndex = activeChapter.beats.findIndex(b => b.id === beatId);
     if (beatIndex === -1) return;
 
     const beat = activeChapter.beats[beatIndex];
-    setIsDrafting(true);
+    if (!isBatch) setIsDrafting(true);
 
     const updatedBeats = [...activeChapter.beats];
     updatedBeats[beatIndex].status = 'drafting';
@@ -373,11 +627,39 @@ export default function Workspace() {
       const relevantContext = await retrieveRelevantContext(beat.description);
 
       // 2. Memory Tree Context Assembly
-      const currentIndex = chapters.findIndex(c => c.id === activeChapter.id);
-      const previousChapters = chapters.slice(0, currentIndex);
+      const currentChapters = chaptersRef.current;
+      const currentActiveChapter = currentChapters.find(c => c.id === activeChapter.id);
+      if (!currentActiveChapter) return;
+
+      const currentIndex = currentChapters.findIndex(c => c.id === activeChapter.id);
+      const previousChapters = currentChapters.slice(0, currentIndex);
       
       // Level 1: Global Settings
-      const globalSettings = `世界规则：${(worldState.rules || []).join(' | ')}\n角色状态：${JSON.stringify(worldState.characters || [])}\n未回收伏笔：${(worldState.threads || []).filter(t => t.status === 'open').map(t => t.title).join(', ')}`;
+      const activeCharacters = worldState.characters.filter(c => (activeChapter.characterIds || []).includes(c.id)).map(c => ({
+        name: c.name,
+        role: c.role,
+        description: c.description,
+        state: c.state,
+        knowledge: c.knowledge
+      }));
+      const activeRelationships = (worldState.relationships || []).filter(r => 
+        (activeChapter.characterIds || []).includes(r.sourceId) && (activeChapter.characterIds || []).includes(r.targetId)
+      ).map(r => ({
+        source: worldState.characters.find(c => c.id === r.sourceId)?.name,
+        target: worldState.characters.find(c => c.id === r.targetId)?.name,
+        type: r.type,
+        description: r.description,
+        intensity: r.intensity
+      }));
+      const activeThreads = (worldState.threads || []).filter(t => 
+        ((activeChapter.threadIds || []).includes(t.id)) && 
+        (!t.volumeId || t.volumeId === activeVolume?.id)
+      ).map(t => ({
+        ...t,
+        involvedCharacters: worldState.characters.filter(c => (t.characterIds || []).includes(c.id)).map(c => c.name)
+      }));
+      const activeLore = (worldState.lore || []).map(l => `${l.concept}: ${l.explanation}`).join(' | ');
+      const globalSettings = `世界规则：${(worldState.rules || []).join(' | ')}\n世界法典：${activeLore || '无'}\n涉及角色：${JSON.stringify(activeCharacters)}\n角色关系：${JSON.stringify(activeRelationships)}\n关联伏笔（及其涉及角色）：${JSON.stringify(activeThreads)}\n未回收伏笔：${(worldState.threads || []).filter(t => t.status === 'open' && (!t.volumeId || t.volumeId === activeVolume?.id)).map(t => t.title).join(', ')}`;
       
       // Level 2: Volume Summaries (older chapters)
       const volumeSummaries = previousChapters.slice(0, -5).map(c => `【${c.title}】摘要: ${c.summary || c.content.slice(0, 300)}`).join('\n');
@@ -386,9 +668,12 @@ export default function Workspace() {
       const recentSummaries = previousChapters.slice(-5).map(c => `【${c.title}】摘要: ${c.summary || c.content.slice(0, 500)}`).join('\n');
       
       // Level 4: Current Chapter Full Text
-      const currentChapterFullText = activeChapter.content;
+      const currentChapterFullText = currentActiveChapter.content;
+      
+      const beatCharacters = worldState.characters.filter(c => (beat.characterIds || []).includes(c.id));
+      const beatThread = (worldState.threads || []).find(t => t.id === beat.threadId);
 
-      const prompt = `你是一个顶级小说家。请根据以下“多层级记忆树”上下文、检索到的相关信息和当前场景节拍，撰写一段引人入胜的小说正文。
+      const prompt = `你是一个顶级小说家。请根据以下“多层级记忆树”上下文、检索到的相关信息、当前场景节拍及其涉及角色，撰写一段引人入胜的小说正文。
       
       ### 第一层：全局设定 (Global Settings)
       ${globalSettings}
@@ -407,17 +692,22 @@ export default function Workspace() {
       
       ---
       当前需要撰写的场景节拍：${beat.description}
+      本节拍涉及角色：${JSON.stringify(beatCharacters)}
+      本节拍关联伏笔：${beatThread ? `${beatThread.title}: ${beatThread.description}` : '无'}
       本章意图：${activeChapter.intent}
       ${getStylePrompt()}
       
-      要求：
-      1. 必须使用中文输出。
-      2. 严格遵循设定的【文风基调】，消除 AI 味。
-      3. 贯彻 "Show, Don't Tell" 原则，增加画面感和感官细节。
-      4. 承接上文语气，自然过渡，不要重复上文已经写过的内容。
-      5. 确保角色行为符合其在“全局设定”中的性格和当前状态。
-      6. 如果当前节拍涉及到检索到的伏笔，请自然地将其融入正文中。
-      7. 直接输出小说正文，不要包含任何多余的解释或标题。`;
+      ### 写作要求 (Writing Requirements)
+      1. 目标字数：约 ${genSettings.targetWords} 字。
+      2. 叙述节奏：${genSettings.pacing === 'slow' ? '节奏缓慢，注重心理描写和环境渲染' : genSettings.pacing === 'fast' ? '节奏明快，注重动作和对话，推动剧情' : '节奏适中，平衡描写与叙事'}。
+      3. 感官聚焦：${genSettings.sensoryFocus.length > 0 ? `重点突出以下感官细节：${genSettings.sensoryFocus.join(', ')}` : '自然平衡各种感官描写'}。
+      4. 对话：${genSettings.includeDialogue ? '包含生动的人物对话' : '尽量减少对话，侧重叙述'}。
+      5. 心理：${genSettings.includeInternalMonologue ? '包含细腻的人物内心独白' : '侧重外部表现'}。
+      6. 必须使用中文输出。
+      7. 严格遵循设定的【文风基调】，消除 AI 味。
+      8. 贯彻 "Show, Don't Tell" 原则，增加画面感和感官细节。
+      9. 承接上文语气，自然过渡，不要重复上文已经写过的内容。
+      10. 直接输出小说正文，不要包含任何多余的解释或标题。`;
 
       const responseText = await callAi({
         prompt: prompt,
@@ -425,25 +715,51 @@ export default function Workspace() {
 
       const generatedText = responseText || '';
       
-      const finalContent = activeChapter.content + (activeChapter.content ? '\n\n' : '') + generatedText;
-      updatedBeats[beatIndex].status = 'completed';
-      updateChapter({ 
-        beats: updatedBeats,
-        content: finalContent
-      });
-      
-      // Trigger background extraction and summarization after AI drafting
-      extractKnowledge(finalContent);
-      summarizeChapter(activeChapter.id, finalContent);
-      
-      // Auto-switch to reader tab to see the new content
-      setActiveTab('reader');
+      // Update chapters state
+      setChapters(prev => prev.map(ch => {
+        if (ch.id === activeChapter.id) {
+          const newContent = ch.content + (ch.content ? '\n\n' : '') + generatedText;
+          const newBeats = [...ch.beats];
+          const bIdx = newBeats.findIndex(b => b.id === beatId);
+          if (bIdx !== -1) newBeats[bIdx].status = 'completed';
+          
+          return { ...ch, content: newContent, beats: newBeats };
+        }
+        return ch;
+      }));
+
+      // Trigger side effects AFTER state update (outside of the updater function)
+      const currentChapters = chaptersRef.current;
+      const updatedChapter = currentChapters.find(c => c.id === activeChapter.id);
+      if (updatedChapter) {
+        const newContent = updatedChapter.content + (updatedChapter.content ? '\n\n' : '') + generatedText;
+        extractKnowledge(newContent);
+        summarizeChapter(activeChapter.id, newContent);
+        analyzeWorldStateSync(generatedText, beat);
+      }
       
     } catch (error) {
       console.error(error);
-      setAlertDialog({ isOpen: true, message: "撰写节拍失败，请重试。" });
-      updatedBeats[beatIndex].status = 'pending';
-      updateChapter({ beats: updatedBeats });
+      setAlertDialog({ isOpen: true, message: `撰写节拍 "${beat.description.slice(0, 20)}..." 失败，请重试。` });
+      const finalBeats = [...activeChapter.beats];
+      const bIdx = finalBeats.findIndex(b => b.id === beatId);
+      if (bIdx !== -1) finalBeats[bIdx].status = 'pending';
+      updateChapter({ beats: finalBeats });
+    } finally {
+      if (!isBatch) setIsDrafting(false);
+    }
+  };
+
+  const executeBatchBeats = async () => {
+    const pendingBeats = activeChapter.beats.filter(b => b.status === 'pending');
+    if (pendingBeats.length === 0) return;
+
+    setIsDrafting(true);
+    try {
+      for (const beat of pendingBeats) {
+        await executeBeat(beat.id, true);
+      }
+      setActiveTab('reader');
     } finally {
       setIsDrafting(false);
     }
@@ -558,7 +874,33 @@ export default function Workspace() {
               
               {/* Progress Indicator */}
               <div className="mt-20 pt-8 border-t border-slate-100 flex items-center justify-between text-slate-400 text-sm italic">
-                <span>本章结束</span>
+                <div className="flex items-center gap-4">
+                  <span>本章结束</span>
+                  {activeChapter.status !== 'completed' && activeChapter.content && (
+                    <button 
+                      onClick={completeChapter}
+                      disabled={isCompletingChapter}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-green-100 text-green-700 hover:bg-green-200 rounded-lg font-medium transition-colors not-italic"
+                    >
+                      {isCompletingChapter ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                      {isCompletingChapter ? '生成摘要中...' : '完成本章并同步至世界状态'}
+                    </button>
+                  )}
+                  {activeChapter.status === 'completed' && (
+                    <div className="flex items-center gap-3">
+                      <span className="flex items-center gap-1 text-green-600 font-medium not-italic" title={activeChapter.summary}>
+                        <CheckCircle2 className="w-4 h-4" /> 已完成
+                      </span>
+                      <button 
+                        onClick={completeChapter} 
+                        disabled={isCompletingChapter}
+                        className="text-xs text-slate-400 hover:text-indigo-500 underline not-italic"
+                      >
+                        {isCompletingChapter ? '同步中...' : '重新同步'}
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <span>{activeChapter.content?.length || 0} 字</span>
               </div>
             </div>
@@ -579,8 +921,64 @@ export default function Workspace() {
                     {isPlanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                     {isPlanning ? 'AI 构思中...' : 'AI 构思大纲与节拍'}
                   </button>
+                  <button
+                    onClick={suggestPlot}
+                    disabled={isPlanning || activeChapter.beats.length === 0}
+                    className="flex items-center gap-2 px-4 py-2 bg-amber-50 text-amber-600 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors text-sm font-medium disabled:opacity-50"
+                  >
+                    {isPlanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+                    {isPlanning ? '建议中...' : '剧情建议'}
+                  </button>
                 </div>
                 
+                <div className="mb-4">
+                  <label className="text-xs font-bold text-indigo-800 mb-2 block">本章涉及角色：</label>
+                  <div className="flex flex-wrap gap-2">
+                    {worldState.characters.map(char => (
+                      <button
+                        key={char.id}
+                        onClick={() => {
+                          const newIds = (activeChapter.characterIds || []).includes(char.id)
+                            ? (activeChapter.characterIds || []).filter(id => id !== char.id)
+                            : [...(activeChapter.characterIds || []), char.id];
+                          updateChapter({ characterIds: newIds });
+                        }}
+                        className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                          (activeChapter.characterIds || []).includes(char.id)
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-white text-indigo-600 border border-indigo-200 hover:bg-indigo-100'
+                        }`}
+                      >
+                        {char.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="mb-4">
+                  <label className="text-xs font-bold text-indigo-800 mb-2 block">本章关联伏笔：</label>
+                  <div className="flex flex-wrap gap-2">
+                    {(worldState.threads || []).map(thread => (
+                      <button
+                        key={thread.id}
+                        onClick={() => {
+                          const newIds = (activeChapter.threadIds || []).includes(thread.id)
+                            ? (activeChapter.threadIds || []).filter(id => id !== thread.id)
+                            : [...(activeChapter.threadIds || []), thread.id];
+                          updateChapter({ threadIds: newIds });
+                        }}
+                        className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                          (activeChapter.threadIds || []).includes(thread.id)
+                            ? 'bg-purple-600 text-white'
+                            : 'bg-white text-purple-600 border border-purple-200 hover:bg-purple-100'
+                        }`}
+                      >
+                        {thread.title}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 {activeChapter.intent ? (
                   <textarea
                     value={activeChapter.intent}
@@ -593,7 +991,176 @@ export default function Workspace() {
                 )}
               </div>
 
-              {/* Beats Section */}
+              {/* Generation Workshop Settings */}
+              <div className="bg-white rounded-xl p-6 border border-slate-200 shadow-sm">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                    <Settings className="w-5 h-5 text-slate-400" />
+                    创作工坊设置 (Generation Settings)
+                  </h3>
+                  <div className="flex bg-slate-100 p-1 rounded-lg">
+                    <button 
+                      onClick={() => setGenSettings(prev => ({ ...prev, mode: 'single' }))}
+                      className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${genSettings.mode === 'single' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}
+                    >
+                      单步生成
+                    </button>
+                    <button 
+                      onClick={() => setGenSettings(prev => ({ ...prev, mode: 'batch' }))}
+                      className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${genSettings.mode === 'batch' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}
+                    >
+                      批量连写
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-4">
+                    <div>
+                      <label className="text-xs font-bold text-slate-500 mb-2 block flex justify-between">
+                        目标字数 (单次生成)
+                        <span className="text-indigo-600">{genSettings.targetWords} 字</span>
+                      </label>
+                      <input 
+                        type="range" 
+                        min="100" 
+                        max="2000" 
+                        step="100"
+                        value={genSettings.targetWords}
+                        onChange={(e) => setGenSettings(prev => ({ ...prev, targetWords: parseInt(e.target.value) }))}
+                        className="w-full h-2 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-slate-500 mb-2 block">叙事节奏 (Pacing)</label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {['slow', 'balanced', 'fast'].map(p => (
+                          <button
+                            key={p}
+                            onClick={() => setGenSettings(prev => ({ ...prev, pacing: p as any }))}
+                            className={`py-2 rounded-lg text-xs font-medium border transition-all ${genSettings.pacing === p ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                          >
+                            {p === 'slow' ? '舒缓' : p === 'fast' ? '紧凑' : '均衡'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="text-xs font-bold text-slate-500 mb-2 block">感官聚焦 (Sensory Focus)</label>
+                      <div className="flex flex-wrap gap-2">
+                        {['视觉', '听觉', '嗅觉', '触觉', '心理', '动作'].map(s => (
+                          <button
+                            key={s}
+                            onClick={() => {
+                              const newFocus = genSettings.sensoryFocus.includes(s)
+                                ? genSettings.sensoryFocus.filter(f => f !== s)
+                                : [...genSettings.sensoryFocus, s];
+                              setGenSettings(prev => ({ ...prev, sensoryFocus: newFocus }));
+                            }}
+                            className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${genSettings.sensoryFocus.includes(s) ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                          >
+                            {s}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex gap-4">
+                      <label className="flex items-center gap-2 cursor-pointer group">
+                        <div 
+                          onClick={() => setGenSettings(prev => ({ ...prev, includeDialogue: !prev.includeDialogue }))}
+                          className={`w-10 h-5 rounded-full transition-all relative ${genSettings.includeDialogue ? 'bg-indigo-600' : 'bg-slate-200'}`}
+                        >
+                          <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-all ${genSettings.includeDialogue ? 'translate-x-5' : ''}`} />
+                        </div>
+                        <span className="text-xs font-bold text-slate-600">包含对话</span>
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer group">
+                        <div 
+                          onClick={() => setGenSettings(prev => ({ ...prev, includeInternalMonologue: !prev.includeInternalMonologue }))}
+                          className={`w-10 h-5 rounded-full transition-all relative ${genSettings.includeInternalMonologue ? 'bg-indigo-600' : 'bg-slate-200'}`}
+                        >
+                          <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-all ${genSettings.includeInternalMonologue ? 'translate-x-5' : ''}`} />
+                        </div>
+                        <span className="text-xs font-bold text-slate-600">包含心理</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                {genSettings.mode === 'batch' && (
+                  <div className="mt-6 pt-6 border-t border-slate-100">
+                    <button
+                      onClick={executeBatchBeats}
+                      disabled={isDrafting || activeChapter.beats.filter(b => b.status === 'pending').length === 0}
+                      className="w-full py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl font-bold text-sm shadow-lg hover:shadow-xl hover:scale-[1.01] transition-all disabled:opacity-50 disabled:scale-100 flex items-center justify-center gap-2"
+                    >
+                      {isDrafting ? <Loader2 className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5" />}
+                      {isDrafting ? '正在批量连写中...' : `一键连写剩余 ${activeChapter.beats.filter(b => b.status === 'pending').length} 个节拍`}
+                    </button>
+                    <p className="text-[10px] text-slate-400 text-center mt-2 italic">
+                      批量模式将按顺序自动撰写所有待处理的节拍，并实时同步上下文。
+                    </p>
+                  </div>
+                )}
+              </div>
+
+          {/* World State Sync Suggestions */}
+          {syncSuggestions.length > 0 && (
+            <div className="mb-6 bg-indigo-50 border border-indigo-200 rounded-xl p-4 shadow-sm animate-in fade-in slide-in-from-top-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-bold text-indigo-900 flex items-center gap-2 text-sm">
+                  <RefreshCw className="w-4 h-4 text-indigo-500 animate-spin-slow"/> 世界状态同步建议
+                </h3>
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => setSyncSuggestions([])}
+                    className="text-[10px] text-slate-400 hover:text-slate-600 px-2 py-1"
+                  >
+                    忽略全部
+                  </button>
+                  <button 
+                    onClick={applySyncSuggestions}
+                    className="text-[10px] bg-indigo-600 text-white px-3 py-1 rounded-md hover:bg-indigo-700 flex items-center gap-1"
+                  >
+                    <ShieldCheck className="w-3 h-3" /> 全部应用
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                {syncSuggestions.map((s, i) => {
+                  const targetName = s.type === 'character' 
+                    ? worldState.characters.find(c => c.id === s.id)?.name 
+                    : `${worldState.characters.find(c => c.id === worldState.relationships.find(r => r.id === s.id)?.sourceId)?.name} & ${worldState.characters.find(c => c.id === worldState.relationships.find(r => r.id === s.id)?.targetId)?.name}`;
+                  
+                  return (
+                    <div key={i} className="bg-white p-2 rounded border border-indigo-100 text-[10px] flex items-start gap-2">
+                      <div className="mt-0.5">
+                        {s.type === 'character' ? <Users className="w-3 h-3 text-indigo-400"/> : <Zap className="w-3 h-3 text-rose-400"/>}
+                      </div>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-1 mb-1">
+                          <span className="font-bold text-slate-700">{targetName}</span>
+                          <span className="text-slate-400">»</span>
+                          <span className="text-indigo-600 font-medium">{s.field}</span>
+                        </div>
+                        <div className="text-slate-600 mb-1">
+                          新值: <span className="bg-indigo-50 px-1 rounded text-indigo-700">{s.newValue}</span>
+                        </div>
+                        <div className="text-slate-400 italic">理由: {s.reason}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Beats Section */}
               {activeChapter.beats.length > 0 && (
                 <div className="space-y-4">
                   <h3 className="text-lg font-bold text-slate-800 border-b border-slate-200 pb-2">场景节拍 (Beats)</h3>
@@ -621,6 +1188,51 @@ export default function Workspace() {
                               className="w-full bg-transparent border-none focus:ring-0 p-0 text-slate-700 resize-none"
                               rows={2}
                             />
+                            <div className="mt-2">
+                              <label className="text-[10px] font-bold text-slate-500 mb-1 block">本节拍涉及角色：</label>
+                              <div className="flex flex-wrap gap-1">
+                                {worldState.characters.map(char => (
+                                  <button
+                                    key={char.id}
+                                    onClick={() => {
+                                      const newBeats = [...activeChapter.beats];
+                                      const charIds = newBeats[index].characterIds || [];
+                                      newBeats[index].characterIds = charIds.includes(char.id)
+                                        ? charIds.filter(id => id !== char.id)
+                                        : [...charIds, char.id];
+                                      updateChapter({ beats: newBeats });
+                                    }}
+                                    className={`px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors ${
+                                      (beat.characterIds || []).includes(char.id)
+                                        ? 'bg-indigo-600 text-white'
+                                        : 'bg-white text-indigo-600 border border-indigo-200 hover:bg-indigo-100'
+                                    }`}
+                                  >
+                                    {char.name}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                            <div className="mt-2">
+                              <label className="text-[10px] font-bold text-slate-500 mb-1 block">本节拍关联伏笔：</label>
+                              <select
+                                value={beat.threadId || ''}
+                                onChange={(e) => {
+                                  const newBeats = [...activeChapter.beats];
+                                  newBeats[index].threadId = e.target.value || undefined;
+                                  updateChapter({ beats: newBeats });
+                                }}
+                                className="w-full text-xs p-1 rounded border border-slate-200 bg-white text-slate-600"
+                              >
+                                <option value="">无</option>
+                                {(worldState.threads || []).filter(t => 
+                                  (activeChapter.threadIds || []).includes(t.id) && 
+                                  (!t.volumeId || t.volumeId === activeVolume?.id)
+                                ).map(thread => (
+                                  <option key={thread.id} value={thread.id}>{thread.title}</option>
+                                ))}
+                              </select>
+                            </div>
                           </div>
                           <button
                             onClick={() => executeBeat(beat.id)}
@@ -638,6 +1250,39 @@ export default function Workspace() {
                       </div>
                     ))}
                   </div>
+                  
+                  {/* Complete Chapter Button (Writer Tab) */}
+                  {activeChapter.status !== 'completed' && activeChapter.content && (
+                    <div className="mt-8 flex justify-center">
+                      <button
+                        onClick={completeChapter}
+                        disabled={isCompletingChapter || activeChapter.beats.some(b => b.status !== 'completed')}
+                        className={`flex items-center gap-2 px-6 py-3 rounded-xl font-bold transition-all shadow-sm ${
+                          activeChapter.beats.some(b => b.status !== 'completed')
+                            ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                            : 'bg-gradient-to-r from-green-500 to-emerald-600 text-white hover:shadow-md hover:scale-105'
+                        }`}
+                      >
+                        {isCompletingChapter ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle2 className="w-5 h-5" />}
+                        {isCompletingChapter ? '正在生成摘要并同步...' : '完成本章并同步至世界状态'}
+                      </button>
+                    </div>
+                  )}
+                  {activeChapter.status === 'completed' && (
+                    <div className="mt-8 flex flex-col items-center gap-3">
+                      <div className="flex items-center gap-2 px-6 py-3 rounded-xl font-bold bg-green-50 text-green-600 border border-green-200">
+                        <CheckCircle2 className="w-5 h-5" />
+                        本章已完成，摘要已同步
+                      </div>
+                      <button 
+                        onClick={completeChapter} 
+                        disabled={isCompletingChapter}
+                        className="text-sm text-slate-400 hover:text-indigo-500 underline"
+                      >
+                        {isCompletingChapter ? '正在重新生成并同步...' : '内容有修改？重新同步摘要'}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
